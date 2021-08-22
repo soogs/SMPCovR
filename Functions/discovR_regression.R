@@ -20,7 +20,8 @@ discovR <- function(X, Y, blockcols, R, alpha,
   # Input #
   # X : predictor matrix
   # Y : outcome variables (can be a matrix)
-  # blockcols : vector specifying the number of variables that each data block has
+  # blockcols : vector specifying the number of variables that each data block has. 
+  # if a single block is used, user can simply specify NULL
   # R : number of covariates
   # alpha : weighting parameter between X and Y
   # lasso_w : lasso penalty for the weights. vector for multiple components
@@ -88,7 +89,7 @@ discovR <- function(X, Y, blockcols, R, alpha,
     return (result)
   }
   
-  # pcovr function from Katrijn's bmc bioinformatics paper #
+  # pcovr function from Katrijn Van Deun's bmc bioinformatics paper #
   pcovr <- function(X, Y, R, alpha){
     
     # if Y is provided as a vector.. #
@@ -461,14 +462,7 @@ discovR <- function(X, Y, blockcols, R, alpha,
             
             h_order <- sample(1:length(blockindex[[k]]))
             
-            # saving objects prior to loop
-            PX <- Px %x% X 
-            
             Xk <- X[,blockindex[[k]]]
-            
-            Xl <- X[,-blockindex[[k]]]
-            
-            conv_ingroup <- FALSE
             
             Wk <- c(W_new[blockindex[[k]],r])
             
@@ -503,19 +497,13 @@ discovR <- function(X, Y, blockcols, R, alpha,
               loss1 <- losscal(Y = Y, X = X, W = W_new, Py = Py, 
                                Px = Px, alpha = alpha, lasso_w = lasso_w,
                                lasso_y = lasso_y,
-                               grouplasso_w = grouplasso_w, ridge_y = ridge_y, blockindex = blockindex)
+                               grouplasso_w = grouplasso_w, 
+                               ridge_y = ridge_y, blockindex = blockindex)
               
               if (loss1 > loss0){
                 print("loss increase via coordinate descent")
                 
                 stop()
-              }
-              
-              
-              if (Wkh_new != 0){
-                if (loss0 - loss1 < 1e-7){
-                  conv_ingroup <- TRUE
-                }
               }
               
               # saving loss history #
@@ -563,11 +551,6 @@ discovR <- function(X, Y, blockcols, R, alpha,
   # updatePx function #
   updatePx <- function(alpha, X, W){
     
-    if (sum(colSums(W != 0) == 0) > 0){
-      print ("ERROR: W matrix has zero-columns. This disallows the P computation. Try a lower l1 penalty.")
-      stop()
-    }
-    
     constant <- sqrt((1 - alpha) / sum(X^2))
     
     svdd <- svd(t(constant * X %*% W) %*% (constant * X))
@@ -580,31 +563,31 @@ discovR <- function(X, Y, blockcols, R, alpha,
   
   # 2. define a few objects ####
   
-  # Y could be provided as a column vector. transfer into matrix
+  # Y could be provided as a column vector (in a univariate case)
+  # turn it into a matrix object in that case
   if (is.vector(Y)){
     Y <- matrix(data = Y, ncol = 1)
   }
   
-  I <- nrow(X)
-  Jx <- ncol(X)
-  Jy <- ncol(Y)
-  J <- Jx + Jy
-  
-  # weighting X and Y according to the alpha parameter and the I*J
-  w1 <- (I*J*alpha) / (sum(Y^2))
-  w2 <- (I*J*(1-alpha)) / (sum(X^2))
-  
-  wY <- sqrt(w1) * Y
-  wX <- sqrt(w2) * X
-  
-  # Z = [wY wX]
-  Z <- cbind(wY, wX)
-  
-  # blockindex object needed to allow for esimation (no multiblock)
-  blockindex <- list(1:ncol(X))
-  
-  # common and distinctive structure (only common component)
-  cd <- rep(1, R)
+  # defining the blockindex object #
+  # if it is a single-block problme, then blockindex is defined as a list 
+  # with one object 
+  if (is.null(blockcols)){
+    
+    blockindex <- list(1:ncol(X))
+    
+  } else {
+    # otherwise, in a multiblock case, define blockindex as usual
+    blockcols2 <- cumsum(blockcols)
+    
+    blockindex <- list()
+    
+    blockindex[[1]] <- 1:blockcols2[1]
+    
+    for (i in 2:length(blockcols)){
+      blockindex[[i]] <- (blockcols2[i-1]+1):blockcols2[i]
+    }
+  }
   
   # 3. initial values generated ####
   
@@ -622,7 +605,7 @@ discovR <- function(X, Y, blockcols, R, alpha,
     nrstart <- 1
   } 
     
-  # vector to save results later
+  # vector and list to save results from multiple starting values
   multi_results <- list()
   multi_loss <- c()
     
@@ -655,8 +638,6 @@ discovR <- function(X, Y, blockcols, R, alpha,
       
       colsumX2 <- colSums(X^2)
       
-      ssZ <- sum(Z^2)
-      
       # initial loss #
       loss0 <- 10000
       
@@ -669,21 +650,35 @@ discovR <- function(X, Y, blockcols, R, alpha,
       # 5. estimation ####
       while (conv == 0){
         
-        # P given W #
-        Px <- updatePx(wX = wX, X = X, W = W)
+        # Px update #
+        Px <- updatePx(alpha = alpha, X = X, W = W)
         
-        py <- updatePy(X = X, W = W, Y = Y, R = R, Py = Py, Px = Px, alpha = alpha, 
-                       lasso_w = lasso_w, ridge_w = ridge_w, 
-                       lasso_y = lasso_y, ridge_y = ridge_y)$py
+        # loss check #
+        loss1 <- losscal(Y = Y, X = X, W = W, Px = Px, Py = Py, alpha = alpha,
+                         lasso_w = lasso_w, grouplasso_w = grouplasso_w,
+                         lasso_y = lasso_y, ridge_y = ridge_y, blockindex = blockindex)
         
-        Py <- matrix(py, nrow = R)
+        # current loss is always smaller than the previous loss
+        if ((loss1 - loss0) > 1e-10){
+          print ("ERROR: current loss > previous loss, after Px estimation")
+          stop()
+        }
         
-        # reweighitng the Px for loss calculationg
-        Px_weighted <- Px / (sqrt(w2))
+        # loss update
+        loss0 <- loss1
         
-        loss1 <- losscal(Y = Y, X = X, W = W, Px = Px_weighted, Py = Py, alpha = alpha,
-                         lasso_w = lasso_w, ridge_w = ridge_w,
-                         lasso_y = lasso_y, ridge_y = ridge_y)
+        # Py update #
+        Py <- updatePy(X = X, Y = Y, R = R, W = W, 
+                       Py = Py, Px = Px, alpha = alpha, 
+                       lasso_w = lasso_w, grouplasso_w = grouplasso_w, 
+                       lasso_y = lasso_y, ridge_y = ridge_y, 
+                       blockindex = blockindex)$Py
+        
+        loss1 <- losscal(Y = Y, X = X, W = W, Px = Px, Py = Py, 
+                         alpha = alpha,
+                         lasso_w = lasso_w, grouplasso_w = grouplasso_w,
+                         lasso_y = lasso_y, ridge_y = ridge_y,
+                         blockindex = blockindex)
         
         # current loss is always smaller than the previous loss
         if ((loss0 - loss1) < stop_value){
@@ -691,11 +686,9 @@ discovR <- function(X, Y, blockcols, R, alpha,
         }
         
         if ((loss1 - loss0) > 1e-10){
-          print ("ERROR: current loss > previous loss, after loadings estimation")
-          # stop()
+          print ("ERROR: current loss > previous loss, after Py estimation")
+          stop()
         }
-        
-        
         
         iter <- iter + 1
         
@@ -704,22 +697,18 @@ discovR <- function(X, Y, blockcols, R, alpha,
         loss0 <- loss1
         
         
-        # I think Py should be reweighted before providing as input for the updateW?
-        Py_weighted <- Py * sqrt(w1)
+        # W update #
+        W <- updateW(Y = Y, X = X, W = W, 
+                     Px = Px, Py = Py, R = R, alpha = alpha, 
+                     lasso_w = lasso_w, grouplasso_w = grouplasso_w, 
+                     lasso_y = lasso_y, ridge_y = ridge_y, 
+                     blockindex = blockindex)$W
         
-        P_weighted <- rbind(t(Py_weighted), Px)
-        
-        colsumP2 <- colSums(P_weighted^2)
-        
-        # W given P #
-        W <- updateW_cpp(Z = Z, W = W, X = X, P = P_weighted, R = R, lambda1 = as.matrix(lasso_w), lambda2 = ridge_w, colsumX2 = as.matrix(colsumX2), colsumP2 = as.matrix(colsumP2), blockindex = blockindex, cd = cd)
-        
-        # reweighting the Px for loss calculation
-        Px_weighted <- Px / (sqrt(w2))
-        
-        loss1 <- losscal(Y = Y, X = X, W = W, Px = Px_weighted, Py = Py, alpha = alpha,
-                         lasso_w = lasso_w, ridge_w = ridge_w,
-                         lasso_y = lasso_y, ridge_y = ridge_y)
+        loss1 <- losscal(Y = Y, X = X, W = W, Px = Px, Py = Py, 
+                         alpha = alpha,
+                         lasso_w = lasso_w, grouplasso_w = grouplasso_w,
+                         lasso_y = lasso_y, ridge_y = ridge_y,
+                         blockindex = blockindex)
         
         # current loss is always smaller than the previous loss
         if ((loss0 - loss1) < stop_value){
@@ -728,7 +717,7 @@ discovR <- function(X, Y, blockcols, R, alpha,
         
         if ((loss1 - loss0) > 1e-10){
           print ("ERROR: current loss > previous loss, after weights estimation")
-          # stop()
+          stop()
         }
         iter <- iter + 1
         
@@ -738,17 +727,10 @@ discovR <- function(X, Y, blockcols, R, alpha,
       }
       
       
-      P <- rbind(t(Py), Px)
+      result_list <- list(W = W, Py = Py, Px = Px, 
+                          loss = loss1, loss_hist = loss_hist, 
+                          iter = iter)
       
-      # reweighting step #
-      # Py <- matrix(P[1:Jy,] / (sqrt(w1)), ncol = R)
-      Px <- P[-c(1:Jy),] / (sqrt(w2))
-      
-      if (R == 1){
-        Px <- matrix(P[-c(1:Jy),] / (sqrt(w2)), ncol = 1)
-      }
-      
-      result_list <- list(W = W, P = P, loss = loss1, loss_hist = loss_hist, iter = iter, Px = Px, Py = Py)
       multi_loss[nr] <- loss1
       multi_results[[nr]] <- result_list
       
