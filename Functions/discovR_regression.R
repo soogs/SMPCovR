@@ -23,8 +23,8 @@ discovR <- function(X, Y, blockcols, R, alpha,
   # blockcols : vector specifying the number of variables that each data block has
   # R : number of covariates
   # alpha : weighting parameter between X and Y
-  # lasso_w : lasso penalty for the weights
-  # grouplasso_w : group lasso penalty for the weights
+  # lasso_w : lasso penalty for the weights. vector for multiple components
+  # grouplasso_w : group lasso penalty for the weights. vector for multiple components
   # lasso_y : lasso penalty for the regression coefficients
   # ridge_y : ridge penalty for the regression coefficients
   # inits : starting value specification
@@ -40,33 +40,6 @@ discovR <- function(X, Y, blockcols, R, alpha,
     stop("Vector of length R is required as an input for the lasso penalty")
   }
   
-  # updatePx function #
-  # Adopted from the Github repository for the Sparse PCovR paper (Van Deun et al., 2018)
-  # https://doi.org/10.1186/s12859-018-2114-5
-  updatePx <- function(wX, W, X){
-    
-    if (sum(colSums(W != 0) == 0) > 0){
-      print ("ERROR: W matrix has zero-columns. This disallows the P computation. Try a lower l1 penalty.")
-      stop()
-    }
-    
-    Tmat <- X %*% W
-    K1 <- t(wX) %*% Tmat
-    K <- t(Tmat) %*% wX %*% t(wX) %*% Tmat
-    eigs <- eigen(K)
-    V <- eigs$vectors
-    Ssq <- eigs$values
-    
-    S <- diag(Ssq^(-0.5))
-    
-    if(ncol(W) == 1){
-      S <- matrix(Ssq^(-0.5), ncol = 1, nrow = 1)
-    }
-    
-    Px <- K1 %*% V %*% S %*% t(V)
-    
-    return (Px)
-  }
   
   # loss calculation function #
   # the inputs for this function are as raw as possible:
@@ -77,6 +50,13 @@ discovR <- function(X, Y, blockcols, R, alpha,
     
     for (r in 1:length(lasso_w)){
       lasso_w_mat[,r] <- lasso_w[r]
+    }
+    
+    
+    lasso_y_mat <- matrix(0, nrow = dim(Py)[1], ncol = dim(Py)[2])
+    
+    for (r in 1:length(lasso_y)){
+      lasso_y_mat[,r] <- lasso_y[r]
     }
   
     
@@ -94,7 +74,7 @@ discovR <- function(X, Y, blockcols, R, alpha,
     
     pca_loss <- sum((X - X %*% W %*% t(Px))^2) / sum((X^2))
     
-    reg_loss <- sum((Y - X %*% W %*% Py)^2) / sum(Y^2)
+    reg_loss <- sum((Y - X %*% W %*% t(Py))^2) / sum(Y^2)
     
     l2norm <- glasso_norm(x = W, grouplasso_w = grouplasso_w, blockindex = blockindex, R = ncol(W))
     
@@ -102,13 +82,13 @@ discovR <- function(X, Y, blockcols, R, alpha,
       (1 - alpha) * pca_loss + 
       sum(lasso_w_mat * abs(W)) +  
       l2norm + 
-      lasso_y * sum(abs(Py)) + 
+      sum(lasso_y_mat * abs(Py)) + 
       ridge_y * sum(Py^2)
     
     return (result)
   }
   
-  # pcovr function from bmc bioinformatics #
+  # pcovr function from Katrijn's bmc bioinformatics paper #
   pcovr <- function(X, Y, R, alpha){
     
     # if Y is provided as a vector.. #
@@ -215,34 +195,35 @@ discovR <- function(X, Y, blockcols, R, alpha,
   }
   
   # updatePy function #
-  updatePy <- function(X, W, Y, R, Py, Px, alpha, lasso_w, ridge_w, lasso_y, ridge_y){
+  updatePy <- function(X, Y, R, W, Py, Px, alpha, 
+                       lasso_w, grouplasso_w, lasso_y, ridge_y,
+                       blockindex){
     
     loss_py <- function(X, Y, W, Py, lasso_y, ridge_y, alpha){
       
-      result <- alpha / sum(Y^2) * sum((Y - X %*% W %*% Py)^2) + lasso_y * sum(abs(Py)) + ridge_y * sum(Py^2)
+      lasso_y_mat <- matrix(0, nrow = dim(Py)[1], ncol = dim(Py)[2])
+      
+      for (r in 1:length(lasso_y)){
+        lasso_y_mat[,r] <- lasso_y[r]
+      }
+      
+      
+      result <- alpha / sum(Y^2) * sum((Y - X %*% W %*% t(Py))^2) + 
+        sum(lasso_y_mat * abs(Py)) + ridge_y * sum(Py^2)
       
       return(result)
       
     }
     
-    I <- nrow(X)
-    Jx <- ncol(X)
-    Jy <- ncol(Y)
-    J <- Jx + Jy
-    
     Tmat <- X %*% W
-    
-    ixt <- diag(ncol(Y)) %x% Tmat
-    
-    y <- c(Y)
     
     Py_check <- Py
     
-    py <- c(Py)
-    
-    py_old <- py
+    Py_old <- Py
     
     loss_old <- 100000
+    
+    loss_Py_old <- 100000
     
     conv <- FALSE
     
@@ -250,63 +231,350 @@ discovR <- function(X, Y, blockcols, R, alpha,
     
     while (!conv){
       
-      for (k in 1:(ncol(Y) * R)){
+      for (r in 1:R){
         
-        rk <- y - ixt %*% py + ixt[,k] * py[k]
-        
-        tk <- ixt[,k]
-        
-        A <- (I*J*alpha * sum(tk^2)) / (sum(Y^2))
-        
-        left <- A * t(tk) %*% rk / (sum(tk^2))
-        
-        right <- lasso_y / (2)
-        
-        # soft thresholding #
-        if (left > right){
+        for (h in 1:ncol(Y)){
+          t_hr <- Y[,h] - Tmat %*% Py[h,] +  Tmat[,r] * Py[h,r] 
           
-          pyk <- (left - right) / (A + ridge_y)
+          left <- t(Tmat[,r]) %*% t_hr
           
-        } else if (left < (-right)){
+          right <- sum(Y^2) * lasso_y[r] / (2 * alpha)
           
-          pyk <- (left + right) / (A + ridge_y)
+          denom <- sum(Tmat[,r]^2) + (sum(Y^2) / alpha) * ridge_y
           
-        } else if (abs(left) <= right){
+          # soft thresholding #
+          if (left > right){
+            
+            py_hr <- (left - right) / denom
+            
+          } else if (left < (-right)){
+            
+            py_hr <- (left + right) / denom
+            
+          } else if (abs(left) <= right){
+            
+            py_hr <- 0
+          }
           
-          pyk <- 0
-        }
-        
-        # update the regression coefficient #
-        py[k] <- pyk 
-        
-        Py_check <- matrix(py, nrow = R)
-        
-        # loss check (the entire loss) #
-        loss_new <- losscal(Y = Y, X = X, W = W, alpha = alpha, Px = Px, Py = Py_check, lasso_w = lasso_w,
-                            ridge_w = ridge_w, lasso_y = lasso_y, ridge_y = ridge_y)
-        
-        # loss_new <- loss_py(X = X, Y = Y, W = W, Py = Py_check, lasso_y = lasso_y, ridge_y = ridge_y, alpha = alpha)
-        
-        
-        if ((loss_new - loss_old) > 1e-10){
-          print("loss up")
-        } else{
-          loss_old <- loss_new
+          
+          # update the regression coefficient #
+          Py[h,r] <- py_hr
+          
+          # loss check (the entire loss) #
+          loss_new <- losscal(Y = Y, X = X, W = W, alpha = alpha, 
+                              Px = Px, Py = Py, lasso_w = lasso_w,
+                              grouplasso_w = grouplasso_w, 
+                              lasso_y = lasso_y, ridge_y = ridge_y,
+                              blockindex = blockindex)
+          
+          # loss check (only wrt Py)
+          loss_Py_new <- loss_py(X = X, Y = Y, W = W, Py = Py, 
+                                 lasso_y = lasso_y, 
+                                 ridge_y = ridge_y, alpha = alpha)
+          
+          
+          if ((loss_new - loss_old) > 1e-13){
+            print("entire loss up")
+            
+            stop()
+          } else{
+            loss_old <- loss_new
+          }
+          
+          
+          if ((loss_Py_new - loss_Py_old) > 1e-13){
+            print("loss wrt Py up")
+            
+            stop()
+          } else{
+            loss_Py_old <- loss_Py_new
+          }
+          
         }
         
       }
       
+      
       # convergence check #
-      if (sum(abs(py_old - py)) < 1e-10){
+      if (sum(abs(Py_old - Py)) < 1e-12){
         conv <- TRUE
       } else {
         
-        py_old <- py
+        Py_old <- Py
         
         conv_counter <- conv_counter + 1
       }
+      
     }
-    return(list(py = py, conv_counter = conv_counter))
+    return(list(Py = Py, conv_counter = conv_counter))
+  }
+  
+  
+  # updateW function #
+  updateW <- function(Y, X, R, W, Py, Px, alpha, 
+                      lasso_w, grouplasso_w, lasso_y, 
+                      ridge_y, blockindex){
+    
+    
+    # soft-thresholding operator
+    soft <- function(x, lambda){
+      x2 <- abs(x) - lambda
+      
+      if(x2 < 0){x2 <- 0}
+      
+      result <- sign(x) * x2
+      
+      return(result)
+    }
+    
+    # general loss calculation #
+    
+    losscal <- function(Y, X, W, Px, Py, alpha, lasso_w, grouplasso_w, lasso_y, ridge_y, blockindex){
+      lasso_w_mat <- matrix(0, nrow = dim(W)[1], ncol = dim(W)[2])
+      
+      for (r in 1:length(lasso_w)){
+        lasso_w_mat[,r] <- lasso_w[r]
+      }
+      
+      
+      lasso_y_mat <- matrix(0, nrow = dim(Py)[1], ncol = dim(Py)[2])
+      
+      for (r in 1:length(lasso_y)){
+        lasso_y_mat[,r] <- lasso_y[r]
+      }
+      
+      
+      glasso_norm <- function(x, grouplasso_w, blockindex, R){
+        l2norm <- 0
+        
+        for (r in 1:R){
+          for (i in 1:length(blockindex)){
+            l2norm <- l2norm + grouplasso_w[r] * sqrt(sum(x[blockindex[[i]],r]^2)) * sqrt(length(blockindex[[i]]))
+          }
+        }
+        return (l2norm)
+      }
+      
+      
+      pca_loss <- sum((X - X %*% W %*% t(Px))^2) / sum((X^2))
+      
+      reg_loss <- sum((Y - X %*% W %*% t(Py))^2) / sum(Y^2)
+      
+      l2norm <- glasso_norm(x = W, grouplasso_w = grouplasso_w, blockindex = blockindex, R = ncol(W))
+      
+      result <- (alpha) * reg_loss + 
+        (1 - alpha) * pca_loss + 
+        sum(lasso_w_mat * abs(W)) +  
+        l2norm + 
+        sum(lasso_y_mat * abs(Py)) + 
+        ridge_y * sum(Py^2)
+      
+      return (result)
+    }
+    
+    SSY <- sum(Y^2)
+    
+    SSX <- sum(X^2)
+    
+    # W_new will be the new matrix
+    W_new <- W
+    
+    # initial loss calculation #
+    loss0 <- losscal(Y = Y, X = X, W = W, Py = Py, 
+                     Px = Px, alpha = alpha, lasso_w = lasso_w,
+                     grouplasso_w = grouplasso_w, 
+                     lasso_y = lasso_y,
+                     ridge_y = ridge_y, blockindex = blockindex)
+    
+    # saving loss history #
+    loss_hist <- loss0
+    
+    # set.seed(seed)
+    
+    # randomizing the order of coordinate descent
+    r_order <- sample(1:R)
+    # r_order <- 1:R
+    
+    conv <- FALSE
+    
+    loss0_out <- loss0
+    
+    while (!conv){
+      
+      for (r in r_order){
+        
+        k_order <- sample(1:length(blockindex))
+        # k_order <- 1:length(blockindex)
+        
+        for (k in k_order){
+          
+          Wk <- c(W_new[blockindex[[k]],r])
+          
+          Xk <- X[,blockindex[[k]]]
+          
+          # r_k: contribution for Y, except group k & component r
+          r_k <- Y - X %*% W_new %*% t(Py) + Xk %*% Wk %*% t(Py[,r])
+          
+          # s_k: contribution for X, except for group k & component r
+          s_k <- X %*% Px[,r] - (X %*% W_new[,r] - Xk %*% Wk)
+          
+          soft_y <- (2*alpha/SSY) * (r_k %*% Py[,r])
+          
+          soft_x <- (2 *(1-alpha)/SSX) * s_k
+          
+          k_soft <- diag(c(soft_y + soft_x)) %*% Xk
+          
+          k_soft <- colSums(k_soft)
+          
+          k_soft <- unlist(lapply(k_soft, function(x){soft(x, lasso_w[r])}))
+          
+          # check if l2-norm of k_soft is smaller than grouplasso penalty #
+          J_k <- length(blockindex[[k]])
+          
+          if(sqrt(sum(k_soft^2)) <= (grouplasso_w[r] * sqrt(J_k))){
+            Wk_new <- Wk
+            
+            Wk_new[] <- 0
+            
+            # update the entire matrix W_new
+            W_new[blockindex[[k]],r] <- Wk_new
+            
+            # loss W checking #
+            loss1 <- losscal(Y = Y, X = X, W = W_new, Py = Py, 
+                             Px = Px, alpha = alpha, lasso_w = lasso_w,
+                             grouplasso_w = grouplasso_w, lasso_y = lasso_y,
+                             ridge_y = ridge_y, blockindex = blockindex)
+            
+            if (loss1 > loss0){
+              print("loss increase after block sparsified")
+              stop()
+            }
+            
+            # saving loss history #
+            loss_hist <- append(loss_hist, loss1)
+            
+            loss0 <- loss1
+            
+          } else {
+            # if the group coefficient is not zero vector,
+            # iteration of coordinate descent for elementwise sparsity
+            
+            h_order <- sample(1:length(blockindex[[k]]))
+            
+            # saving objects prior to loop
+            PX <- Px %x% X 
+            
+            Xk <- X[,blockindex[[k]]]
+            
+            Xl <- X[,-blockindex[[k]]]
+            
+            conv_ingroup <- FALSE
+            
+            Wk <- c(W_new[blockindex[[k]],r])
+            
+            for (h in h_order){
+              
+              r_kh <- Y - X %*% W_new %*% t(Py) + (matrix(Xk[,h] * Wk[h], ncol = 1) %*% t(Py[,r]))
+              
+              s_kh <- X %*% Px[,r] - X %*% W_new[,r] + matrix(Xk[,h] * Wk[h], ncol = 1)
+              
+              soft_y_h <- (2*alpha/SSY) * (r_kh %*% Py[,r])
+              
+              soft_x_h <- (2 *(1-alpha)/SSX) * s_kh
+              
+              kh_soft <- t(soft_y_h + soft_x_h) %*% Xk[,h]
+              
+              soft_Wkh <- soft(x = kh_soft, lambda = lasso_w[r])
+              
+              denom <- (((2 * alpha / SSY) * (t(Py[,r]) %*% Py[,r]) + 
+                           (2 * (1-alpha) / SSX)) * (t(Xk[,h]) %*% Xk[,h])) +
+                (grouplasso_w[r] * sqrt(J_k) / sqrt(sum(Wk^2)))
+              
+              Wkh_new <- soft_Wkh / denom
+              
+              # Wk_new is the candidate Wk vectors
+              Wk_new <- Wk
+              Wk_new[h] <- Wkh_new
+              
+              # updating W_new matrix
+              W_new[blockindex[[k]],r] <- Wk_new
+              
+              # loss calculation #
+              loss1 <- losscal(Y = Y, X = X, W = W_new, Py = Py, 
+                               Px = Px, alpha = alpha, lasso_w = lasso_w,
+                               lasso_y = lasso_y,
+                               grouplasso_w = grouplasso_w, ridge_y = ridge_y, blockindex = blockindex)
+              
+              if (loss1 > loss0){
+                print("loss increase via coordinate descent")
+                
+                stop()
+              }
+              
+              
+              if (Wkh_new != 0){
+                if (loss0 - loss1 < 1e-7){
+                  conv_ingroup <- TRUE
+                }
+              }
+              
+              # saving loss history #
+              loss_hist <- append(loss_hist, loss1)
+              
+              loss0 <- loss1
+              
+              Wk <- c(W_new[blockindex[[k]], r])
+              
+            } 
+          }
+        }
+      }
+      
+      # one loop complete. check loss for convergence 
+      loss1_out <- losscal(Y = Y, X = X, W = W_new, Py = Py, 
+                           Px = Px, alpha = alpha, lasso_w = lasso_w,
+                           lasso_y = lasso_y,
+                           grouplasso_w = grouplasso_w, 
+                           ridge_y = ridge_y, blockindex = blockindex)
+      
+      if (loss1_out - loss0_out > 0){
+        print("loss increase after one whole loop")
+        stop()
+      }
+      
+      if (abs(loss0_out - loss1_out) < 1e-7){
+        conv <- TRUE
+      } else{
+        
+        loss0_out <- loss1_out
+        
+      }
+      
+      
+    }
+    
+    result <- list(W = W_new, loss_hist = loss_hist)
+    
+    return(result)
+    
+  }
+  
+  
+  # updatePx function #
+  updatePx <- function(alpha, X, W){
+    
+    if (sum(colSums(W != 0) == 0) > 0){
+      print ("ERROR: W matrix has zero-columns. This disallows the P computation. Try a lower l1 penalty.")
+      stop()
+    }
+    
+    constant <- sqrt((1 - alpha) / sum(X^2))
+    
+    svdd <- svd(t(constant * X %*% W) %*% (constant * X))
+    
+    Px_new <- svdd$v %*% t(svdd$u)
+    
+    return(Px_new)
   }
   
   
