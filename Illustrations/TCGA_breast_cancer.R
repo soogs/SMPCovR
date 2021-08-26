@@ -43,6 +43,8 @@ Y <- pre_process(Y, weight = T)
 
 # 3. discovR estimation ####
 
+time1 <- Sys.time()
+
 hi <- discovR(X = dat, Y = Y, blockcols = c(200, 184, 137), R = 2, 
               alpha = 0.4, lasso_w = c(0.002,0.002), 
               grouplasso_w = c(0.0002, 0.0002),
@@ -50,6 +52,18 @@ hi <- discovR(X = dat, Y = Y, blockcols = c(200, 184, 137), R = 2,
               ridge_y = 0.0001, inits = "rational", 
               nrstart = 1, seed = 1111, MAXITER = 10000, w_one_iteration = TRUE, stop_value = 1e-5)
 
+time2 <- Sys.time()
+
+time3 <- Sys.time()
+
+hi2 <- discovR_cpp(X = dat, Y = Y, blockcols = c(200, 184, 137), R = 2, 
+              alpha = 0.4, lasso_w = c(0.002,0.002), 
+              grouplasso_w = c(0.0002, 0.0002),
+              lasso_y = c(0.0001, 0.0001), 
+              ridge_y = 0.0001, inits = "rational", 
+              nrstart = 1, seed = 1111, MAXITER = 10000, stop_value = 1e-5)
+
+time4 <- Sys.time()
 
 
 hi <- discovR(X = dat, Y = Y, blockcols = c(200, 184, 137), R = 1, 

@@ -1,6 +1,6 @@
 # discovR regression #
 # initiated: 15th June 2021 #
-# last modified: 22nd August 2021 #
+# last modified: 26th August 2021 #
 # Soogeun Park #
 
 # 0. backstory ####
@@ -397,9 +397,9 @@ discovR <- function(X, Y, blockcols, R, alpha,
     
     # set.seed(seed)
     
-    # randomizing the order of coordinate descent
-    r_order <- sample(1:R)
-    # r_order <- 1:R
+    # NOT randomizing the order of coordinate descent (for comparison against cpp)
+    # r_order <- sample(1:R)
+    r_order <- 1:R
     
     conv <- FALSE
     
@@ -409,8 +409,8 @@ discovR <- function(X, Y, blockcols, R, alpha,
       
       for (r in r_order){
         
-        k_order <- sample(1:length(blockindex))
-        # k_order <- 1:length(blockindex)
+        # k_order <- sample(1:length(blockindex))
+        k_order <- 1:length(blockindex)
         
         for (k in k_order){
           
@@ -465,7 +465,8 @@ discovR <- function(X, Y, blockcols, R, alpha,
             # if the group coefficient is not zero vector,
             # iteration of coordinate descent for elementwise sparsity
             
-            h_order <- sample(1:length(blockindex[[k]]))
+            # h_order <- sample(1:length(blockindex[[k]]))
+            h_order <- 1:length(blockindex[[k]])
             
             Xk <- X[,blockindex[[k]]]
             
@@ -756,7 +757,7 @@ discovR <- function(X, Y, blockcols, R, alpha,
   multi_results_min$W_list <- blockindex
   
   for (i in 1:length(blockindex)){
-    multi_results_min$W_list[[i]] <- W[blockindex[[i]],]
+    multi_results_min$W_list[[i]] <- multi_results_min$W[blockindex[[i]],]
     
     names(multi_results_min$W_list)[i] <- paste("block", i, sep ="")
     
