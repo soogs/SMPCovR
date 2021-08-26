@@ -1,6 +1,6 @@
 # discovR regression #
 # initiated: 15th June 2021 #
-# last modified: 21st August 2021 #
+# last modified: 22nd August 2021 #
 # Soogeun Park #
 
 # 0. backstory ####
@@ -14,6 +14,7 @@ discovR <- function(X, Y, blockcols, R, alpha,
                     inits = c("rational", "oracle", "multistart"), 
                     nrstart = 10, 
                     include_rational = TRUE,
+                    w_one_iteration = TRUE,
                     seed,
                     MAXITER = 10000, stop_value = 1e-10){
   
@@ -31,6 +32,9 @@ discovR <- function(X, Y, blockcols, R, alpha,
   # inits : starting value specification
   # nrstart : number of multiple starts
   # include_rational : whether rational start is included as a set of the multistart
+  # w_one_iteration : whether we do one run of iteration for W estimation. This is because
+  # the W-estimation often takes time, and it may save time to do one iteration and 
+  # pass the estimates over to the others, rather than waiting for convergence for W.
   # MAXITER : Maximum number of iteration
   # stop_value : tolerance
   # seed : set.seed value
@@ -183,7 +187,7 @@ discovR <- function(X, Y, blockcols, R, alpha,
     # if Py turns out to be a vector,
     # we need to make it into a matrix of one row 
     if (is.vector(Py)){
-      Py <- matrix(data = Py, nrow = 1)
+      Py <- matrix(data = Py, ncol = 1)
     }
     
     # fit measure #
@@ -314,8 +318,9 @@ discovR <- function(X, Y, blockcols, R, alpha,
   # updateW function #
   updateW <- function(Y, X, R, W, Py, Px, alpha, 
                       lasso_w, grouplasso_w, lasso_y, 
-                      ridge_y, blockindex){
+                      ridge_y, blockindex, one_iteration){
     
+    # one_iteration = TRUE if you only want to run it once instead of spending time on the convergence
     
     # soft-thresholding operator
     soft <- function(x, lambda){
@@ -500,11 +505,11 @@ discovR <- function(X, Y, blockcols, R, alpha,
                                grouplasso_w = grouplasso_w, 
                                ridge_y = ridge_y, blockindex = blockindex)
               
-              if (loss1 > loss0){
+              if ((loss1 - loss0) > 1e-10){
                 print("loss increase via coordinate descent")
-                
                 stop()
               }
+              
               
               # saving loss history #
               loss_hist <- append(loss_hist, loss1)
@@ -538,6 +543,9 @@ discovR <- function(X, Y, blockcols, R, alpha,
         
       }
       
+      if (one_iteration){
+        conv <- TRUE
+      }
       
     }
     
@@ -634,7 +642,7 @@ discovR <- function(X, Y, blockcols, R, alpha,
       # initial Py #
       Tmat <- X %*% W
       
-      Py <- MASS::ginv(t(Tmat) %*% Tmat) %*% t(Tmat) %*% Y
+      Py <- t(MASS::ginv(t(Tmat) %*% Tmat) %*% t(Tmat) %*% Y)
       
       colsumX2 <- colSums(X^2)
       
@@ -653,19 +661,20 @@ discovR <- function(X, Y, blockcols, R, alpha,
         # Px update #
         Px <- updatePx(alpha = alpha, X = X, W = W)
         
-        # loss check #
-        loss1 <- losscal(Y = Y, X = X, W = W, Px = Px, Py = Py, alpha = alpha,
-                         lasso_w = lasso_w, grouplasso_w = grouplasso_w,
-                         lasso_y = lasso_y, ridge_y = ridge_y, blockindex = blockindex)
-        
-        # current loss is always smaller than the previous loss
-        if ((loss1 - loss0) > 1e-10){
-          print ("ERROR: current loss > previous loss, after Px estimation")
-          stop()
-        }
-        
-        # loss update
-        loss0 <- loss1
+        # no loss calculation after Px, because I'm very confident that the loss does not increase
+        # # loss check #
+        # loss1 <- losscal(Y = Y, X = X, W = W, Px = Px, Py = Py, alpha = alpha,
+        #                  lasso_w = lasso_w, grouplasso_w = grouplasso_w,
+        #                  lasso_y = lasso_y, ridge_y = ridge_y, blockindex = blockindex)
+        # 
+        # # current loss is always smaller than the previous loss
+        # if ((loss1 - loss0) > 1e-10){
+        #   print ("ERROR: current loss > previous loss, after Px estimation")
+        #   stop()
+        # }
+        # 
+        # # loss update
+        # loss0 <- loss1
         
         # Py update #
         Py <- updatePy(X = X, Y = Y, R = R, W = W, 
@@ -702,7 +711,7 @@ discovR <- function(X, Y, blockcols, R, alpha,
                      Px = Px, Py = Py, R = R, alpha = alpha, 
                      lasso_w = lasso_w, grouplasso_w = grouplasso_w, 
                      lasso_y = lasso_y, ridge_y = ridge_y, 
-                     blockindex = blockindex)$W
+                     blockindex = blockindex, one_iteration = w_one_iteration)$W
         
         loss1 <- losscal(Y = Y, X = X, W = W, Px = Px, Py = Py, 
                          alpha = alpha,
@@ -727,6 +736,11 @@ discovR <- function(X, Y, blockcols, R, alpha,
       }
       
       
+      # providing names for the objects
+      rownames(W) <- colnames(X)
+      rownames(Px) <- colnames(X)
+      rownames(Py) <- colnames(Y)
+      
       result_list <- list(W = W, Py = Py, Px = Px, 
                           loss = loss1, loss_hist = loss_hist, 
                           iter = iter)
@@ -736,9 +750,18 @@ discovR <- function(X, Y, blockcols, R, alpha,
       
     }
     
-    lossmin <- which.min(multi_loss)
-    multi_results_min <- multi_results[[lossmin]]
+  lossmin <- which.min(multi_loss)
+  multi_results_min <- multi_results[[lossmin]]
+  
+  multi_results_min$W_list <- blockindex
+  
+  for (i in 1:length(blockindex)){
+    multi_results_min$W_list[[i]] <- W[blockindex[[i]],]
     
-  return_results <- result_list
+    names(multi_results_min$W_list)[i] <- paste("block", i, sep ="")
+    
+  }
+    
+  return_results <- multi_results_min
   return (return_results)
 }
