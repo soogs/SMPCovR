@@ -1,29 +1,27 @@
 # discovR regression - cpp #
-# initiated: 26th August 2021 #
+# initiated: 26th May 2022 #
 # Soogeun Park #
 
 # 0. backstory ####
-# The functions within "discovR_regression.R" such as "updateW" is replaced by the Rcpp version
-# to improve computation speed
+# Previously, this discovR function was also with the grouplasso penalty on W
+# but that is now replaced with ridge penalty
 
-discovR_cpp <- function(X, Y, blockcols, R, alpha, 
-                    lasso_w, grouplasso_w, lasso_y, 
-                    ridge_y,
-                    inits = c("rational", "oracle", "multistart"), 
-                    nrstart = 10, 
-                    include_rational = TRUE,
-                    seed,
-                    MAXITER = 10000, stop_value = 1e-10){
+discovR_cpp_ridge <- function(X, Y, R, alpha, 
+                        lasso_w, ridge_w, 
+                        lasso_y, ridge_y,
+                        inits = c("rational", "oracle", "multistart"), 
+                        nrstart = 10, 
+                        include_rational = TRUE,
+                        seed,
+                        MAXITER = 10000, stop_value = 1e-10){
   
   # Input #
   # X : predictor matrix
   # Y : outcome variables (can be a matrix)
-  # blockcols : vector specifying the number of variables that each data block has. 
-  # if a single block is used, user can simply specify NULL
   # R : number of covariates
   # alpha : weighting parameter between X and Y
   # lasso_w : lasso penalty for the weights. vector for multiple components
-  # grouplasso_w : group lasso penalty for the weights. vector for multiple components
+  # ridge_w : ridge penalty for the weights
   # lasso_y : lasso penalty for the regression coefficients
   # ridge_y : ridge penalty for the regression coefficients
   # inits : starting value specification
@@ -46,13 +44,12 @@ discovR_cpp <- function(X, Y, blockcols, R, alpha,
   # the inputs for this function are as raw as possible:
   # no pre-weighting them by alpha or the l2 norm of X or Y
   
-  losscal <- function(Y, X, W, Px, Py, alpha, lasso_w, grouplasso_w, lasso_y, ridge_y, blockindex){
+  losscal <- function(Y, X, W, Px, Py, alpha, lasso_w, ridge_w, lasso_y, ridge_y){
     lasso_w_mat <- matrix(0, nrow = dim(W)[1], ncol = dim(W)[2])
     
     for (r in 1:length(lasso_w)){
       lasso_w_mat[,r] <- lasso_w[r]
     }
-    
     
     lasso_y_mat <- matrix(0, nrow = dim(Py)[1], ncol = dim(Py)[2])
     
@@ -60,29 +57,14 @@ discovR_cpp <- function(X, Y, blockcols, R, alpha,
       lasso_y_mat[,r] <- lasso_y[r]
     }
     
-    
-    glasso_norm <- function(x, grouplasso_w, blockindex, R){
-      l2norm <- 0
-      
-      for (r in 1:R){
-        for (i in 1:length(blockindex)){
-          l2norm <- l2norm + grouplasso_w[r] * sqrt(sum(x[blockindex[[i]],r]^2)) * sqrt(length(blockindex[[i]]))
-        }
-      }
-      return (l2norm)
-    }
-    
-    
     pca_loss <- sum((X - X %*% W %*% t(Px))^2) / sum((X^2))
     
     reg_loss <- sum((Y - X %*% W %*% t(Py))^2) / sum(Y^2)
     
-    l2norm <- glasso_norm(x = W, grouplasso_w = grouplasso_w, blockindex = blockindex, R = ncol(W))
-    
     result <- (alpha) * reg_loss + 
       (1 - alpha) * pca_loss + 
       sum(lasso_w_mat * abs(W)) +  
-      l2norm + 
+      ridge_w * sum(W^2) +
       sum(lasso_y_mat * abs(Py)) + 
       ridge_y * sum(Py^2)
     
@@ -197,8 +179,7 @@ discovR_cpp <- function(X, Y, blockcols, R, alpha,
   
   # updatePy function #
   updatePy <- function(X, Y, R, W, Py, Px, alpha, 
-                       lasso_w, grouplasso_w, lasso_y, ridge_y,
-                       blockindex){
+                       lasso_w, ridge_w, lasso_y, ridge_y){
     
     loss_py <- function(X, Y, W, Py, lasso_y, ridge_y, alpha){
       
@@ -207,7 +188,6 @@ discovR_cpp <- function(X, Y, blockcols, R, alpha,
       for (r in 1:length(lasso_y)){
         lasso_y_mat[,r] <- lasso_y[r]
       }
-      
       
       result <- alpha / sum(Y^2) * sum((Y - X %*% W %*% t(Py))^2) + 
         sum(lasso_y_mat * abs(Py)) + ridge_y * sum(Py^2)
@@ -264,9 +244,8 @@ discovR_cpp <- function(X, Y, blockcols, R, alpha,
           # loss check (the entire loss) #
           loss_new <- losscal(Y = Y, X = X, W = W, alpha = alpha, 
                               Px = Px, Py = Py, lasso_w = lasso_w,
-                              grouplasso_w = grouplasso_w, 
-                              lasso_y = lasso_y, ridge_y = ridge_y,
-                              blockindex = blockindex)
+                              ridge_w = ridge_w,
+                              lasso_y = lasso_y, ridge_y = ridge_y)
           
           # loss check (only wrt Py)
           loss_Py_new <- loss_py(X = X, Y = Y, W = W, Py = Py, 
@@ -329,26 +308,6 @@ discovR_cpp <- function(X, Y, blockcols, R, alpha,
   # turn it into a matrix object in that case
   if (is.vector(Y)){
     Y <- matrix(data = Y, ncol = 1)
-  }
-  
-  # defining the blockindex object #
-  # if it is a single-block problme, then blockindex is defined as a list 
-  # with one object 
-  if (is.null(blockcols)){
-    
-    blockindex <- list(1:ncol(X))
-    
-  } else {
-    # otherwise, in a multiblock case, define blockindex as usual
-    blockcols2 <- cumsum(blockcols)
-    
-    blockindex <- list()
-    
-    blockindex[[1]] <- 1:blockcols2[1]
-    
-    for (i in 2:length(blockcols)){
-      blockindex[[i]] <- (blockcols2[i-1]+1):blockcols2[i]
-    }
   }
   
   # 3. initial values generated ####
@@ -433,15 +392,13 @@ discovR_cpp <- function(X, Y, blockcols, R, alpha,
       # Py update #
       Py <- updatePy(X = X, Y = Y, R = R, W = W, 
                      Py = Py, Px = Px, alpha = alpha, 
-                     lasso_w = lasso_w, grouplasso_w = grouplasso_w, 
-                     lasso_y = lasso_y, ridge_y = ridge_y, 
-                     blockindex = blockindex)$Py
+                     lasso_w = lasso_w, ridge_w = ridge_w, 
+                     lasso_y = lasso_y, ridge_y = ridge_y)$Py
       
       loss1 <- losscal(Y = Y, X = X, W = W, Px = Px, Py = Py, 
                        alpha = alpha,
-                       lasso_w = lasso_w, grouplasso_w = grouplasso_w,
-                       lasso_y = lasso_y, ridge_y = ridge_y,
-                       blockindex = blockindex)
+                       lasso_w = lasso_w, ridge_w = ridge_w, 
+                       lasso_y = lasso_y, ridge_y = ridge_y)
       
       # current loss is always smaller than the previous loss
       if ((loss0 - loss1) < stop_value){
@@ -461,16 +418,14 @@ discovR_cpp <- function(X, Y, blockcols, R, alpha,
       
       
       # W update #
-      W <- updateW_cpp(X = X, Y = Y, W = W, Px = Px, Py = Py, R = R, alpha = alpha, 
-                       lasso_w = lasso_w, grouplasso_w = grouplasso_w, 
-                       lasso_y = lasso_y, ridge_y = ridge_y, 
-                       blockindex = blockindex)$W_new
+      W <- updateW_cpp_ridge(X = X, Y = Y, W = W, Px = Px, Py = Py, R = R, alpha = alpha, 
+                       lasso_w = lasso_w, ridge_w = ridge_w,
+                       lasso_y = lasso_y, ridge_y = ridge_y)$W_new
       
       loss1 <- losscal(Y = Y, X = X, W = W, Px = Px, Py = Py, 
                        alpha = alpha,
-                       lasso_w = lasso_w, grouplasso_w = grouplasso_w,
-                       lasso_y = lasso_y, ridge_y = ridge_y,
-                       blockindex = blockindex)
+                       lasso_w = lasso_w, ridge_w = ridge_w,
+                       lasso_y = lasso_y, ridge_y = ridge_y)
       
       # current loss is always smaller than the previous loss
       if ((loss0 - loss1) < stop_value){
@@ -482,6 +437,10 @@ discovR_cpp <- function(X, Y, blockcols, R, alpha,
         stop()
       }
       iter <- iter + 1
+      
+      if (iter > MAXITER){
+        conv <- 1
+      }
       
       loss_hist[iter] <- loss1
       
@@ -505,15 +464,6 @@ discovR_cpp <- function(X, Y, blockcols, R, alpha,
   
   lossmin <- which.min(multi_loss)
   multi_results_min <- multi_results[[lossmin]]
-  
-  multi_results_min$W_list <- blockindex
-  
-  for (i in 1:length(blockindex)){
-    multi_results_min$W_list[[i]] <- multi_results_min$W[blockindex[[i]],]
-    
-    names(multi_results_min$W_list)[i] <- paste("block", i, sep ="")
-    
-  }
   
   return_results <- multi_results_min
   return (return_results)
